@@ -1,0 +1,7 @@
+node_modules
+dist
+*.local
+.DS_Store
+
+# Deobfuscated original bundle kept locally for dev reference only — not published.
+reference

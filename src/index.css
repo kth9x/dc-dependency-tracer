@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+* {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+/* ── Custom animations (the original's dt-* set) ───────────────────── */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes dt-drop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-dt-drop-in {
+  animation: dt-drop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dt-fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-dt-fade-up {
+  animation: dt-fade-up 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dt-expand-h {
+  0% {
+    opacity: 0;
+    max-height: 0;
+  }
+  100% {
+    opacity: 1;
+    max-height: 80px;
+  }
+}
+.animate-dt-expand-h {
+  animation: dt-expand-h 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dt-chip-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-dt-chip-in {
+  animation: dt-chip-in 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
