@@ -56,6 +56,21 @@ export interface Link {
   side?: "A" | "B";
 }
 
+// ── Whitespace planning: a workload to place ──
+export interface PlacementRole {
+  role: string; // "Compute" | "Storage" | "Network" | …
+  type: string; // "GPU" | "Storage" | "Network"
+  count: number; // racks needed
+  perRackKw: number; // power draw per rack
+}
+export interface Demand {
+  id: string;
+  label: string;
+  roles: PlacementRole[];
+  powerRedundancy: "N" | "N+1" | "2N";
+  coolingRedundancy: "N" | "N+1";
+}
+
 export type ContainerLevel = "floor" | "room" | "zone" | "row";
 export interface Container {
   id: string;

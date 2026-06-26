@@ -46,6 +46,8 @@ export interface Ctx {
   /** consumer id → incoming supply links. */
   feeders: Map<string, Link[]>;
   racks: DcNode[];
+  /** Racks that currently draw power (loadKw>0) — empty white-space racks excluded. */
+  occupied: DcNode[];
   nodes: DcNode[];
 }
 
@@ -58,7 +60,8 @@ export function buildContext(f: Facility): Ctx {
     if (arr) arr.push(l);
     else feeders.set(l.toId, [l]);
   }
-  return { byId, feeders, racks: f.nodes.filter((n) => n.shape === "rack"), nodes: f.nodes };
+  const racks = f.nodes.filter((n) => n.shape === "rack");
+  return { byId, feeders, racks, occupied: racks.filter((r) => (r.loadKw ?? 0) > 0), nodes: f.nodes };
 }
 
 /** Memoized "is this node energized" given a set of failed nodes. */
@@ -153,7 +156,7 @@ export function simulateFailure(ctx: Ctx, failedIds: string[]): SimResult {
   const tenants = new Set<string>();
   let kwLost = 0;
   for (const n of ctx.nodes) if (!isUp(n.id)) down.push(n.id);
-  for (const rk of ctx.racks) {
+  for (const rk of ctx.occupied) {
     const s = rackStatus(ctx, isUp, rk);
     if (!s.up) {
       dropped.push(rk.id);
@@ -209,7 +212,7 @@ export function validateRedundancy(ctx: Ctx): Violation[] {
 
   // Power 2N — racks with fewer than 2 power cords.
   const byRow = new Map<string, { racks: number; kw: number }>();
-  for (const rk of ctx.racks) {
+  for (const rk of ctx.occupied) {
     const cords = (ctx.feeders.get(rk.id) ?? []).filter((l) => l.kind === "power").length;
     if (cords < 2) {
       const k = rowKey(rk.id);

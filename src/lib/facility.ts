@@ -1,16 +1,20 @@
 // ── Faithful facility generator ───────────────────────────────────────
 // Produces ONE believable data center as an instance-level topology:
 // real A/B power trains (2N), dual-corded racks, a generator backup, and
-// N+1 cooling pools — with per-node kW and tenants. Parametric by rack count
-// so it still scales for the perf harness (?synth=N), and it PLANTS a few
-// known faults so the blast-radius engine has ground-truth answers to test:
-//   • one single-corded row      → 2N violation + a real SPOF
-//   • one under-provisioned zone  → N+1 cooling violation (no spare)
-//   • a single cooling plant      → facility-wide SPOF
+// N+1 cooling pools — with per-node kW and tenants.
+//
+// White space: each zone keeps an EMPTY expansion row (racks with loadKw=0)
+// and the power/cooling chain is sized for FULL build-out, so there is genuine
+// free capacity to plan into. A rack's `capacityKw` is its power *budget*;
+// `loadKw` is the current draw (0 = empty/free).
+//
+// Planted faults give the engines ground truth to test:
+//   • one single-corded row       → 2N violation + a real SPOF
+//   • one fully-built, under-cooled zone (N CDUs, no +1 at full load)
+//   • a single cooling plant       → facility-wide SPOF
 //
 // Densities + the capacity-value rate are reused verbatim from dc-bp-redesign
-// (js/data.js) so the tracer is the instance-level realization of DC-BP's
-// cluster specs.
+// (js/data.js) so this is the instance-level realization of DC-BP's specs.
 
 import type { Container, DcNode, Link } from "./types";
 
@@ -35,10 +39,11 @@ const ZONE_GAP_X = 3;
 const ZONE_GAP_Z = 3;
 const ZONE_W = RACKS_PER_ROW * RACK_DX; // 7
 const ZONE_D = ROWS_PER_ZONE * ROW_DZ; // 5.1
+const EXPANSION_ROW = 1; // the GPU row left empty (white space) in partial zones
 
 const TENANTS = ["Frontier", "Atlas", "Orion", "Vega", "Nova", "Lyra"];
 
-/** Density profile for a row within a zone (mostly GPU, some low-power). */
+/** Density profile for a row within a zone (GPU compute + a low-power network row). */
 function rowProfile(rowIdx: number): { role: string; kw: number } {
   if (rowIdx % 3 === 2) return { role: "Network", kw: KW.Network };
   return { role: "Compute", kw: KW.GPU };
@@ -56,25 +61,27 @@ export function genFacility(targetRacks = 120): Facility {
   const containers: Container[] = [];
 
   // Planted faults (kept distinct when there are ≥2 zones).
+  const underCooledZone = Math.min(1, zones - 1); // fully built + only N CDUs (no +1)
   const singleCordedZone = zones - 1; // last zone
-  const singleCordedRow = 1; // its middle row → A-cord only
-  const underProvisionedZone = Math.min(1, zones - 1); // zone 1 → N (no +1) cooling
+  const singleCordedRow = 0; // an OCCUPIED row → real blast radius
+  const isFull = (z: number) => z === underCooledZone; // fully built (no expansion white space)
+  const isOccupied = (z: number, r: number) => isFull(z) || r !== EXPANSION_ROW;
 
   let linkId = 0;
   const link = (fromId: string, toId: string, kind: Link["kind"], side?: "A" | "B") =>
     links.push({ id: `l${linkId++}`, fromId, toId, kind, side });
-
   const node = (n: DcNode) => {
     nodes.push(n);
     return n.id;
   };
 
-  // Pre-compute total facility load for sizing the (full-rated, 2N) power train.
-  let totalLoadKw = 0;
-  for (let z = 0; z < zones; z++)
-    for (let r = 0; r < ROWS_PER_ZONE; r++)
-      totalLoadKw += rowProfile(r).kw * RACKS_PER_ROW;
-  const trainKw = Math.ceil(totalLoadKw * 1.25); // each side carries 100% (+headroom)
+  // Full build-out load (every rack occupied) — sizes the 2N power train + cooling.
+  const fullZoneKw = (() => {
+    let s = 0;
+    for (let r = 0; r < ROWS_PER_ZONE; r++) s += rowProfile(r).kw * RACKS_PER_ROW;
+    return s;
+  })();
+  const trainKw = Math.ceil(fullZoneKw * zones * 1.25); // each side carries 100% (+headroom)
 
   // ── Global power sources + 2N train heads (placed left of the floor) ──
   const sideX = -6;
@@ -103,6 +110,9 @@ export function genFacility(targetRacks = 120): Facility {
   // ── Cooling source (single plant = planted facility-wide SPOF) ──
   node({ id: "cplant", label: "Cooling Plant", nodeType: "Cooling Plant", system: "cooling", shape: "equipment", x: sideX + 1.2, y: 6, isSource: true, capacityKw: trainKw, tier: 1 });
 
+  const zoneFullKw = fullZoneKw; // per-zone full build-out load
+  const perCduKw = Math.ceil(zoneFullKw / 3); // CDUs sized so any 3 carry a full zone
+
   // ── Per-zone power branch, cooling pool, and racks ──
   for (let z = 0; z < zones; z++) {
     const col = z % zoneCols;
@@ -111,23 +121,22 @@ export function genFacility(targetRacks = 120): Facility {
     const oz = zrow * (ZONE_D + ZONE_GAP_Z);
     const tenant = TENANTS[z % TENANTS.length];
 
-    // zone power load
-    let zoneLoadKw = 0;
-    for (let r = 0; r < ROWS_PER_ZONE; r++) zoneLoadKw += rowProfile(r).kw * RACKS_PER_ROW;
-    const zoneCoolKw = zoneLoadKw; // cooling load ≈ IT load (1:1)
+    // actual occupied cooling load in this zone (what the pool must serve now)
+    let occCoolKw = 0;
+    for (let r = 0; r < ROWS_PER_ZONE; r++)
+      if (isOccupied(z, r)) occCoolKw += rowProfile(r).kw * RACKS_PER_ROW;
 
-    // zone RPP per side, fed by the room PDUs
+    // zone RPP per side, fed by the room PDUs — sized for full build-out.
     const rppA = `rpp-A-${z}`;
     const rppB = `rpp-B-${z}`;
-    node({ id: rppA, label: `RPP A·Z${z + 1}`, nodeType: "RPP", system: "electrical", shape: "equipment", x: ox - 0.5, y: oz + ZONE_D / 2, side: "A", capacityKw: Math.ceil(zoneLoadKw * 1.25), tier: 4 });
-    node({ id: rppB, label: `RPP B·Z${z + 1}`, nodeType: "RPP", system: "electrical", shape: "equipment", x: ox + ZONE_W + 0.5, y: oz + ZONE_D / 2, side: "B", capacityKw: Math.ceil(zoneLoadKw * 1.25), tier: 4 });
+    const rppKw = Math.ceil(zoneFullKw * 1.25);
+    node({ id: rppA, label: `RPP A·Z${z + 1}`, nodeType: "RPP", system: "electrical", shape: "equipment", x: ox - 0.5, y: oz + ZONE_D / 2, side: "A", capacityKw: rppKw, tier: 4 });
+    node({ id: rppB, label: `RPP B·Z${z + 1}`, nodeType: "RPP", system: "electrical", shape: "equipment", x: ox + ZONE_W + 0.5, y: oz + ZONE_D / 2, side: "B", capacityKw: rppKw, tier: 4 });
     link("rpdu-A", rppA, "power", "A");
     link("rpdu-B", rppB, "power", "B");
 
-    // zone cooling pool: N+1 normally (4 CDUs, any 3 carry load); the planted
-    // under-provisioned zone gets only N (3) so it has NO spare.
-    const perCduKw = Math.ceil(zoneCoolKw / 3); // 3 units carry full load
-    const members = z === underProvisionedZone ? 3 : 4;
+    // zone cooling pool: N+1 normally (4 CDUs); the under-cooled zone gets only 3.
+    const members = z === underCooledZone ? 3 : 4;
     const poolId = `cpool-${z}`;
     for (let m = 0; m < members; m++) {
       const cduId = `cdu-${z}-${m}`;
@@ -135,19 +144,31 @@ export function genFacility(targetRacks = 120): Facility {
       link("cplant", cduId, "cooling");
       link(cduId, poolId, "cooling");
     }
-    // virtual pool aggregator (engine-only; not rendered). N+1 capacity check lives here.
-    node({ id: poolId, label: `Cooling Z${z + 1}`, nodeType: "Cooling Pool", system: "cooling", shape: "equipment", x: ox + ZONE_W / 2, y: oz + ZONE_D / 2, combine: "n+1", loadKw: zoneCoolKw, capacityKw: perCduKw * members, virtual: true, tier: 6 });
+    // virtual pool aggregator (engine-only; not rendered). loadKw = current occupied cooling.
+    node({ id: poolId, label: `Cooling Z${z + 1}`, nodeType: "Cooling Pool", system: "cooling", shape: "equipment", x: ox + ZONE_W / 2, y: oz + ZONE_D / 2, combine: "n+1", loadKw: occCoolKw, capacityKw: perCduKw * members, virtual: true, tier: 6 });
 
     // racks
     for (let r = 0; r < ROWS_PER_ZONE; r++) {
       const { kw } = rowProfile(r);
+      const occ = isOccupied(z, r);
       const rowSingleCorded = z === singleCordedZone && r === singleCordedRow;
-      // row container
       const rowId = `row-${z}-${r}`;
       containers.push({ id: rowId, label: `Row ${String.fromCharCode(65 + r)}·Z${z + 1}`, level: "row", cx: ox + ZONE_W / 2, cz: oz + (r + 0.5) * ROW_DZ, w: ZONE_W, d: ROW_DZ * 0.8 });
       for (let c = 0; c < RACKS_PER_ROW; c++) {
         const id = `rk-${z}-${r}-${c}`;
-        node({ id, label: `R${z + 1}-${String.fromCharCode(65 + r)}${c + 1}`, nodeType: "Rack", system: "spatial", shape: "rack", x: ox + (c + 0.5) * RACK_DX, y: oz + (r + 0.5) * ROW_DZ, loadKw: kw, capacityKw: kw, tenant, tier: 7 });
+        node({
+          id,
+          label: `R${z + 1}-${String.fromCharCode(65 + r)}${c + 1}`,
+          nodeType: "Rack",
+          system: "spatial",
+          shape: "rack",
+          x: ox + (c + 0.5) * RACK_DX,
+          y: oz + (r + 0.5) * ROW_DZ,
+          loadKw: occ ? kw : 0, // 0 = empty / available white space
+          capacityKw: kw, // the rack's power budget when filled
+          tenant: occ ? tenant : undefined,
+          tier: 7,
+        });
         // power cords: A always; B unless this is the planted single-corded row
         link(rppA, id, "power", "A");
         if (!rowSingleCorded) link(rppB, id, "power", "B");

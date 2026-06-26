@@ -22,12 +22,12 @@ const ok = (cond: boolean, msg: string, extra?: unknown) => {
 // Default facility: 4 zones × 30 racks = 120; zone load = 2×(10·96 GPU) + 10·12 Network = 2040 kW.
 const f = genFacility(120);
 const ctx = buildContext(f);
-const TOTAL_RACKS = ctx.racks.length;
-const TOTAL_KW = ctx.racks.reduce((s, r) => s + (r.loadKw ?? 0), 0);
-const ZONE_KW = 2 * 10 * KW.GPU + 10 * KW.Network; // 2040
-const SINGLE_ROW_KW = 10 * KW.GPU; // 960 (row B of zone 3 is GPU)
+const OCCUPIED = ctx.occupied.length; // occupied racks (empty white-space excluded)
+const OCCUPIED_KW = ctx.occupied.reduce((s, r) => s + (r.loadKw ?? 0), 0);
+const ZONE_KW = 2 * 10 * KW.GPU + 10 * KW.Network; // 2040 (a full zone)
+const SINGLE_ROW_KW = 10 * KW.GPU; // 960 (the single-corded GPU row)
 
-console.log(`facility: ${f.nodes.length} nodes, ${f.links.length} links, ${TOTAL_RACKS} racks, ${TOTAL_KW} kW`);
+console.log(`facility: ${f.nodes.length} nodes, ${f.links.length} links, ${ctx.racks.length} racks (${OCCUPIED} occupied), ${OCCUPIED_KW} kW`);
 
 console.log("\nbaseline (nothing failed):");
 const base = simulateFailure(ctx, []);
@@ -50,8 +50,8 @@ ok(rpp.kwLost === SINGLE_ROW_KW, `kW lost = ${SINGLE_ROW_KW}`, rpp.kwLost);
 
 console.log("\nfail the sole cooling plant (cplant) — whole floor loses cooling:");
 const plant = simulateFailure(ctx, ["cplant"]);
-ok(plant.dropped.length === TOTAL_RACKS, "every rack dropped", plant.dropped.length);
-ok(plant.kwLost === TOTAL_KW, `kW lost = total (${TOTAL_KW})`, plant.kwLost);
+ok(plant.dropped.length === OCCUPIED, "every occupied rack dropped", plant.dropped.length);
+ok(plant.kwLost === OCCUPIED_KW, `kW lost = total occupied (${OCCUPIED_KW})`, plant.kwLost);
 
 console.log("\nfail one CDU in the under-provisioned zone (cdu-1-0) — that zone loses cooling:");
 const cdu = simulateFailure(ctx, ["cdu-1-0"]);
