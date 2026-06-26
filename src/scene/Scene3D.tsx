@@ -35,6 +35,9 @@ interface SceneProps {
   animated: boolean;
   showLabels: boolean;
   hoveredNode: string | null;
+  failState?: Map<string, FailState>;
+  heat?: Map<string, string>;
+  supplyLines?: { points: [number, number, number][]; color: string }[];
   onHover: (id: string | null) => void;
   onClick: (id: string) => void;
 }
@@ -57,6 +60,11 @@ const EQUIP_BOX: Record<string, [number, number, number]> = {
   RPP: [0.26, 0.32, 0.2],
   BESS: [0.7, 0.18, 0.32],
   "Switch Gear": [0.5, 0.4, 0.16],
+  // Facility sources/heads (no GLB) — render as boxes so the power/cooling
+  // train is always visible in the reliability view.
+  "Utility Feed": [0.34, 0.5, 0.3],
+  Generator: [0.5, 0.42, 0.3],
+  "Cooling Plant": [0.6, 0.5, 0.5],
 };
 const COOLING_BIT: Record<
   string,
@@ -90,14 +98,36 @@ const EQUIP_LOD = 11; // equipment promote distance
 // ── Per-instance color from trace state (replaces opacity-based fade) ───
 const _fog = new THREE.Color("#EDF0F4");
 const _white = new THREE.Color("#ffffff");
+export type FailState = "failed" | "dropped" | "atRisk";
 interface InstCtx {
   hasTrace: boolean;
   nodeLevels: Record<string, number>;
   hlSystems: Record<string, System>;
   activeSet: Set<string>;
+  /** Reliability mode: per-node blast-radius state (overrides trace coloring). */
+  failState?: Map<string, FailState>;
+  /** Capacity view: per-node heat color (overrides everything). */
+  heat?: Map<string, string>;
 }
+const _fail = new THREE.Color("#111827"); // the failed node itself
+const _dropped = new THREE.Color("#DC2626"); // lost all supply
+const _atRisk = new THREE.Color("#F59E0B"); // redundancy lost, still up
 /** Write the state color for one node into `out` (no allocation). */
 function applyState(out: THREE.Color, baseHex: string, id: string, ctx: InstCtx) {
+  if (ctx.heat) {
+    const h = ctx.heat.get(id);
+    if (h) out.set(h);
+    else out.set(baseHex).lerp(_fog, 0.55); // not part of the heat overlay → dim
+    return;
+  }
+  if (ctx.failState) {
+    const st = ctx.failState.get(id);
+    if (st === "failed") out.copy(_fail);
+    else if (st === "dropped") out.copy(_dropped);
+    else if (st === "atRisk") out.copy(_atRisk);
+    else out.set(baseHex).lerp(_fog, 0.62); // unaffected → dim so the blast radius pops
+    return;
+  }
   if (!ctx.hasTrace) {
     out.set(baseHex);
     return;
@@ -1046,7 +1076,7 @@ function NodeInstances({
 export default function Scene3D(props: SceneProps) {
   const {
     activeTsns, edges, hlSystems, relatedIds, hoverSet, hiddenTypes, nodeLevels,
-    showLines, curvedLines, animated, showLabels, hoveredNode, onHover, onClick,
+    showLines, curvedLines, animated, showLabels, hoveredNode, failState, heat, supplyLines, onHover, onClick,
   } = props;
 
   const hasTrace = activeTsns.length > 0;
@@ -1056,7 +1086,9 @@ export default function Scene3D(props: SceneProps) {
   // zoomed in — the default aerial view never pays the GLB decode cost.
   const [detailReady, setDetailReady] = useState(false);
   const [zoomedIn, setZoomedIn] = useState(false);
-  const detail = detailReady && zoomedIn;
+  // In reliability mode keep every rack as an instanced box so the blast-radius
+  // recolor is uniform (detailed GLB clones use their own materials).
+  const detail = detailReady && zoomedIn && !failState && !heat;
   const [labels, setLabels] = useState<ChosenLabel[]>([]);
   useEffect(() => {
     const ric = (window as any).requestIdleCallback;
@@ -1070,8 +1102,8 @@ export default function Scene3D(props: SceneProps) {
 
   const activeSet = useMemo(() => new Set(activeTsns), [activeTsns]);
   const ctx = useMemo<InstCtx>(
-    () => ({ hasTrace, nodeLevels, hlSystems, activeSet }),
-    [hasTrace, nodeLevels, hlSystems, activeSet],
+    () => ({ hasTrace, nodeLevels, hlSystems, activeSet, failState, heat }),
+    [hasTrace, nodeLevels, hlSystems, activeSet, failState, heat],
   );
 
   const visibleSan = useMemo(() => allSan.filter((n) => !hiddenTypes.has(n.nodeType)), [hiddenTypes]);
@@ -1167,6 +1199,11 @@ export default function Scene3D(props: SceneProps) {
 
         <NodeInstances ctx={ctx} hiddenTypes={hiddenTypes} relatedIds={relatedIds} activeTsns={activeTsns} detail={detail} onHover={onHover} onClick={onClick} />
         <HoverBox id={hoveredNode} />
+
+        {/* Reliability: supply paths (A/B power trains + cooling) of the hovered node. */}
+        {supplyLines?.map((l, i) => (
+          <Line key={`supply-${i}`} points={l.points} color={l.color} lineWidth={2.5} />
+        ))}
 
         {hasTrace && showLabels && <SystemLabels nodes={allEquipment.filter(isVisible)} />}
 

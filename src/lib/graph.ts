@@ -1,29 +1,22 @@
 // ── Static graph data + derived lookup maps ───────────────────────────
 // (ports the index chunk's data tables: qu, Bu, Ha, Nu, tp, Km, Jm, km)
 
-import type { Container, DcNode, System } from "./types";
-import nodesData from "../data/nodes.json";
-import containersData from "../data/containers.json";
+import type { Container, DcNode, Link, System } from "./types";
 import categoriesData from "../data/categories.json";
-import { genSynthetic, synthTarget } from "./synth";
+import { genFacility } from "./facility";
+import { synthTarget } from "./synth";
 
-// Real dataset by default; ?synth=N tiles it up to N racks for benchmarking.
-const base = (() => {
-  const target = synthTarget();
-  if (target)
-    try {
-      return genSynthetic(target);
-    } catch {
-      /* fall through to real data */
-    }
-  return {
-    nodes: nodesData as DcNode[],
-    containers: containersData as Container[],
-  };
-})();
+// One faithful, instance-level facility (2N power + N+1 cooling, real kW, A/B
+// trains, dual-corded racks). ?synth=N scales it up for the perf harness.
+const facility = genFacility(synthTarget() ?? undefined);
 
-export const nodes = base.nodes;
-export const containers = base.containers;
+/** Every node incl. engine-only pool aggregators — for the blast-radius engine. */
+export const allNodes: DcNode[] = facility.nodes;
+/** Rendered nodes only (engine-only `virtual` pools excluded). */
+export const nodes: DcNode[] = facility.nodes.filter((n) => !n.virtual);
+export const containers: Container[] = facility.containers;
+/** Instance-level supply links (feeder → consumer) for the engine. */
+export const links: Link[] = facility.links;
 
 /** nodeType -> system category (the original `Ha` map). */
 export const categoryOf = categoriesData as Record<string, System>;
